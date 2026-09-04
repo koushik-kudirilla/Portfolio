@@ -2050,16 +2050,21 @@ body.modal-open { overflow:hidden; }
 body.page-leaving #main-content { opacity: 0; transform: translateY(7px); }
 #main-content { opacity: 1; transform: none; transition: opacity .18s ease, transform .18s ease; }
 
-/* PDF.js viewer: no native browser PDF toolbar, only our own scroll surface. */
+/* PDF.js viewer: our own scroll surface, with the scrollbar UI hidden.
+   Scrolling remains fully functional with wheel, touch, keyboard and trackpad. */
 .pdf-scroll {
-  overflow-y: scroll;
+  overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-width: auto;
-  scrollbar-color: var(--accent-2) #20262a;
-  scrollbar-gutter: stable;
-  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior: auto;
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
+}
+.pdf-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 .pdf-scroll::-webkit-scrollbar { width: 11px; }
 .pdf-scroll::-webkit-scrollbar-track { background: #20262a; border-left: 1px solid var(--border); }
@@ -2291,32 +2296,7 @@ body.page-leaving #main-content { opacity: 0; transform: translateY(7px); }
   box-shadow: none !important;
 }
 
-/* Always-visible UI scrollbar; it overlays the PDF so it never steals width
-   from the document and therefore never creates left/right white edges. */
-.pdf-custom-scrollbar {
-  position: absolute;
-  z-index: 20;
-  top: 8px;
-  right: 5px;
-  bottom: 8px;
-  width: 8px;
-  border-radius: 999px;
-  background: rgba(20, 28, 32, .24);
-  pointer-events: none;
-  opacity: 1;
-  transition: opacity .16s ease;
-}
-.pdf-custom-scrollbar.is-hidden { opacity: 0; }
-.pdf-custom-scrollbar .pdf-scroll-thumb {
-  position: absolute;
-  inset-inline: 0;
-  top: 0;
-  min-height: 34px;
-  border-radius: 999px;
-  background: var(--accent-2);
-  box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 2px 8px rgba(0,0,0,.22);
-}
-
+/* Scrollbar UI is intentionally invisible; the preview remains scrollable. */
 /* No loading placeholder: the first rendered page is the only visual state. */
 .cert-preview .pdf-loading { display: none !important; }
 
@@ -2431,4 +2411,84 @@ body.page-leaving #main-content { opacity: 0; transform: translateY(7px); }
 .cert-preview .pdf-custom-scrollbar {
   display: none !important;
   pointer-events: none !important;
+}
+
+
+/* ==========================================================================
+   CURRENT PASS — NAV / FOOTER / RESUME PREVIEW
+   ========================================================================== */
+
+/* Slightly more compact desktop navigation. */
+@media (min-width: 1181px) {
+  .nav {
+    height: 62px;
+    gap: 18px;
+  }
+  .nav-links {
+    gap: 8px;
+  }
+  .nav-links a {
+    padding: 6px 8px;
+    font-size: .78rem;
+  }
+  .nav-actions {
+    gap: 9px;
+  }
+  .theme-toggle {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+/* Give the footer content a little more breathing room. */
+.site-footer {
+  padding: 34px 0;
+}
+.footer-row {
+  column-gap: 48px;
+  row-gap: 16px;
+}
+
+/* Desktop resume preview: invisible scrollbar, but the modal remains scrollable. */
+@media (min-width: 761px) {
+  .modal-viewer.pdf-scroll {
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+  }
+  .modal-viewer.pdf-scroll::-webkit-scrollbar {
+    width: 0 !important;
+    height: 0 !important;
+    display: none !important;
+  }
+}
+
+/* Preserve the mobile resume viewer's previous scrollbar behavior. */
+@media (max-width: 760px) {
+  .modal-viewer.pdf-scroll {
+    scrollbar-width: auto !important;
+    -ms-overflow-style: auto !important;
+  }
+  .modal-viewer.pdf-scroll::-webkit-scrollbar {
+    width: 8px !important;
+    height: 8px !important;
+    display: block !important;
+  }
+  .modal-viewer.pdf-scroll::-webkit-scrollbar-thumb {
+    background: var(--accent-2);
+    border-radius: 999px;
+  }
+  .modal-viewer.pdf-scroll::-webkit-scrollbar-track {
+    background: color-mix(in srgb, var(--surface-2) 75%, transparent);
+  }
+
+  /* Smaller active-page capsule in the mobile menu. */
+  .nav-links a {
+    padding: 9px 12px !important;
+    min-height: 0 !important;
+    line-height: 1.25;
+  }
+  .nav-links {
+    padding: 12px !important;
+    gap: 3px !important;
+  }
 }
