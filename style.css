@@ -2256,7 +2256,7 @@ body.page-leaving #main-content { opacity: 0; transform: translateY(7px); }
   position: relative !important;
   width: 100% !important;
   height: auto !important;
-  aspect-ratio: 1.37 / 1 !important;
+  aspect-ratio: 1.47 / 1 !important;
   min-height: 0 !important;
   max-height: none !important;
   padding: 0 !important;
@@ -2358,12 +2358,12 @@ body.page-leaving #main-content { opacity: 0; transform: translateY(7px); }
 
 @media (max-width:760px) {
   .cert-preview {
-    aspect-ratio: 1.37 / 1 !important;
+    aspect-ratio: 1.47 / 1 !important;
   }
 }
 
 @media (max-width:480px) {
   .cert-preview {
-    aspect-ratio: 1.37 / 1 !important;
+    aspect-ratio: 1.47 / 1 !important;
   }
 }
