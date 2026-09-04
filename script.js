@@ -46,10 +46,22 @@
   // This removes the avoidable library-load delay from the first preview.
   if(body.dataset.page === "certifications") loadPdfJs().catch(()=>{});
 
-  async function renderPdf(container,url){
-    if(!container||!url)return;
-    container.innerHTML="";
-    container.classList.remove("pdf-ready","pdf-failed");
+  async function renderPdf(container, url) {
+
+        if (!container || !url) return;
+
+        container.innerHTML = "";
+
+        container.classList.remove("pdf-ready", "pdf-failed");
+
+
+    // The outer preview is fixed/stable. Only this inner viewport scrolls.
+    // Keeping the custom rail outside the scrolling content prevents the rail
+    // from moving upward with the PDF pages.
+    const scroller=document.createElement("div");
+    scroller.className="pdf-scroll-viewport";
+    container.appendChild(scroller);
+
     try{
       const pdfjs=await loadPdfJs();
       const absoluteUrl=new URL(url,location.href).href;
@@ -61,14 +73,28 @@
         rangeChunkSize:65536
       }).promise;
 
-      container.innerHTML="";
-      container.classList.add("pdf-scroll","pdf-ready");
+      container.classList.add("pdf-ready");
+      scroller.classList.add("pdf-scroll");
 
       const firstPage=await pdf.getPage(1);
-      const hostWidth=Math.max(container.clientWidth,1);
+      const hostWidth=Math.max(scroller.clientWidth,1);
       const base=firstPage.getViewport({scale:1});
+      const pageRatio=base.width / base.height;
       const scale=hostWidth/base.width;
       const pages=[];
+
+      // Match the preview box to the real first-page aspect ratio for
+      // landscape certificates. This removes the small white/empty strip
+      // caused by guessing a fixed ratio in CSS. Portrait/long pages keep
+      // the fixed viewport so they remain vertically scrollable.
+      container.style.setProperty("--pdf-page-ratio", String(pageRatio));
+      if(pageRatio >= 1.15){
+        container.classList.add("pdf-landscape-fit");
+        container.classList.remove("pdf-portrait-scroll");
+      } else {
+        container.classList.add("pdf-portrait-scroll");
+        container.classList.remove("pdf-landscape-fit");
+      }
 
       const makePage=(page,n)=>{
         const viewport=page.getViewport({scale});
@@ -79,7 +105,7 @@
         canvas.setAttribute("aria-label",`PDF page ${n}`);
         canvas.className="pdf-page-canvas";
         wrap.appendChild(canvas);
-        container.appendChild(wrap);
+        scroller.appendChild(wrap);
         return {page,viewport,canvas,wrap};
       };
 
@@ -107,38 +133,46 @@
           await renderOne(pages[i]);
           await new Promise(r=>requestAnimationFrame(r));
         }
-        updatePdfScrollbar(container);
+        updatePdfScrollbar(scroller,container);
       };
       if("requestIdleCallback" in window) requestIdleCallback(()=>renderRest(),{timeout:80});
       else setTimeout(renderRest,0);
 
-      setupPdfScrollbar(container);
-      setupPdfScrollChaining(container);
+      setupPdfScrollbar(scroller,container);
+      setupPdfScrollChaining(scroller);
+      requestAnimationFrame(()=>updatePdfScrollbar(scroller,container));
     }catch(err){
       console.warn("PDF preview failed:",err);
-      container.classList.remove("pdf-scroll","pdf-ready");
+      container.classList.remove("pdf-ready");
       container.classList.add("pdf-failed");
       container.innerHTML=`<div class="pdf-error"><strong>Preview unavailable</strong><span>The PDF viewer could not load this file in the current browser context.</span></div>`;
     }
   }
 
-  function updatePdfScrollbar(scroller){
-    const rail=scroller?.querySelector(".pdf-custom-scrollbar");
+  function updatePdfScrollbar(scroller,host){
+    const rail=host?.querySelector(".pdf-custom-scrollbar");
     const thumb=rail?.querySelector(".pdf-scroll-thumb");
-    if(!rail||!thumb)return;
+    if(!rail||!thumb||!scroller)return;
+
     const max=Math.max(0,scroller.scrollHeight-scroller.clientHeight);
     const track=Math.max(0,rail.clientHeight);
-    if(max<=1||track<=1){rail.classList.add("is-hidden");return;}
+    if(max<=1||track<=1){
+      rail.classList.add("is-hidden");
+      return;
+    }
+
     rail.classList.remove("is-hidden");
-    const h=Math.max(34,Math.min(track,Math.round(track*(scroller.clientHeight/scroller.scrollHeight))));
+    const h=Math.max(38,Math.min(track,Math.round(track*(scroller.clientHeight/scroller.scrollHeight))));
     const y=Math.round((track-h)*(scroller.scrollTop/max));
     thumb.style.height=`${h}px`;
-    thumb.style.transform=`translateY(${y}px)`;
+    thumb.style.transform=`translate3d(0,${y}px,0)`;
+    rail.setAttribute("aria-valuenow",String(Math.round((scroller.scrollTop/max)*100)));
   }
 
-  function setupPdfScrollbar(scroller){
-    if(!scroller)return;
-    let rail=scroller.querySelector(".pdf-custom-scrollbar");
+  function setupPdfScrollbar(scroller,host){
+    if(!scroller||!host)return;
+    let rail=host.querySelector(".pdf-custom-scrollbar");
+
     if(!rail){
       rail=document.createElement("div");
       rail.className="pdf-custom-scrollbar";
@@ -146,11 +180,13 @@
       rail.setAttribute("aria-label","PDF preview scroll");
       rail.setAttribute("aria-valuemin","0");
       rail.setAttribute("aria-valuemax","100");
+      rail.setAttribute("aria-valuenow","0");
       rail.innerHTML='<span class="pdf-scroll-thumb"></span>';
-      scroller.appendChild(rail);
+      host.appendChild(rail);
 
       let dragging=false,startY=0,startScroll=0;
       const thumb=rail.firstElementChild;
+
       const move=e=>{
         if(!dragging)return;
         const track=Math.max(1,rail.clientHeight-thumb.offsetHeight);
@@ -158,14 +194,23 @@
         scroller.scrollTop=startScroll+(delta/track)*(scroller.scrollHeight-scroller.clientHeight);
         e.preventDefault();
       };
-      const stop=()=>{dragging=false;document.removeEventListener("pointermove",move);document.removeEventListener("pointerup",stop);};
+
+      const stop=()=>{
+        dragging=false;
+        document.removeEventListener("pointermove",move);
+        document.removeEventListener("pointerup",stop);
+      };
+
       thumb.addEventListener("pointerdown",e=>{
-        dragging=true;startY=e.clientY;startScroll=scroller.scrollTop;
+        dragging=true;
+        startY=e.clientY;
+        startScroll=scroller.scrollTop;
         thumb.setPointerCapture?.(e.pointerId);
         document.addEventListener("pointermove",move,{passive:false});
         document.addEventListener("pointerup",stop,{once:true});
         e.preventDefault();
       });
+
       rail.addEventListener("pointerdown",e=>{
         if(e.target===thumb)return;
         const rect=rail.getBoundingClientRect();
@@ -173,19 +218,28 @@
         scroller.scrollTop=ratio*(scroller.scrollHeight-scroller.clientHeight);
       });
     }
-    const update=()=>updatePdfScrollbar(scroller);
+
+    const update=()=>updatePdfScrollbar(scroller,host);
     scroller.addEventListener("scroll",update,{passive:true});
-    if(window.ResizeObserver)new ResizeObserver(update).observe(scroller);
+
+    if(window.ResizeObserver){
+      const ro=new ResizeObserver(update);
+      ro.observe(scroller);
+      ro.observe(host);
+    }
     requestAnimationFrame(update);
   }
 
   function setupPdfScrollChaining(scroller){
     if(!scroller||scroller.dataset.chainBound)return;
     scroller.dataset.chainBound="1";
+
     scroller.addEventListener("wheel",e=>{
       if(Math.abs(e.deltaY)<0.5)return;
+
       const atTop=scroller.scrollTop<=0;
       const atBottom=scroller.scrollTop+scroller.clientHeight>=scroller.scrollHeight-1;
+
       if((atTop&&e.deltaY<0)||(atBottom&&e.deltaY>0)){
         e.preventDefault();
         window.scrollBy({top:e.deltaY,left:0,behavior:"auto"});
@@ -379,16 +433,25 @@
 
   function setupResumeModal(){
     const modal=$("resume-modal"), viewer=$("resume-viewer"), close=$("resume-close"), openLink=$("resume-open");
-    if(!modal || modal.dataset.bound)return;
+    if(!modal || !viewer || modal.dataset.bound)return;
     modal.dataset.bound="1";
     const resumeUrl=d.personal.resumeUrl;
     const open=()=>{
       if(!resumeUrl)return;
-      modal.classList.add("open"); modal.setAttribute("aria-hidden","false"); body.classList.add("modal-open");
+      // The modal viewer must be a single scroll surface. renderPdf() creates
+      // its own viewport, so the outer viewer must never scroll as well.
+      viewer.classList.remove("pdf-scroll");
+      viewer.classList.add("resume-pdf-host");
+      modal.classList.add("open"); modal.setAttribute("aria-hidden","false");
+      body.classList.add("modal-open"); document.documentElement.classList.add("modal-open");
       if(openLink)openLink.href=resumeUrl;
       renderPdf(viewer,resumeUrl); close?.focus();
     };
-    const shut=()=>{modal.classList.remove("open");modal.setAttribute("aria-hidden","true");body.classList.remove("modal-open");if(viewer)viewer.innerHTML="";};
+    const shut=()=>{
+      modal.classList.remove("open"); modal.setAttribute("aria-hidden","true");
+      body.classList.remove("modal-open"); document.documentElement.classList.remove("modal-open");
+      if(viewer){viewer.classList.remove("pdf-scroll");viewer.innerHTML="";}
+    };
     document.addEventListener("click",e=>{if(e.target.closest("[data-resume-preview]")){e.preventDefault();open();}});
     close?.addEventListener("click",shut); modal.addEventListener("click",e=>{if(e.target===modal)shut();});
     document.addEventListener("keydown",e=>{if(e.key==="Escape")shut();});
