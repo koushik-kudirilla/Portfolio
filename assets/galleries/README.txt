@@ -1,0 +1,1 @@
+Add industrial-visit and community-service photos here. Then list their relative paths in data.js under PORTFOLIO_DATA.galleries.
