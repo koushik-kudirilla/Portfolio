@@ -42,41 +42,78 @@
     return pdfPromise;
   }
 
+  // Start loading PDF.js in parallel with page setup on the certifications page.
+  // This removes the avoidable library-load delay from the first preview.
+  if(body.dataset.page === "certifications") loadPdfJs().catch(()=>{});
+
   async function renderPdf(container,url){
     if(!container||!url)return;
-    container.innerHTML=`<div class="pdf-loading"><span>Loading document preview…</span></div>`;
+    // Keep the preview visually empty while the PDF engine starts; never show a
+    // blocking "Loading document preview" message or freeze page scrolling.
+    container.innerHTML="";
     container.classList.remove("pdf-ready","pdf-failed");
     try{
       const pdfjs=await loadPdfJs();
       const absoluteUrl=new URL(url,location.href).href;
       let pdf;
       try {
-        const response=await fetch(absoluteUrl,{cache:"no-store",credentials:"same-origin"});
+        const response=await fetch(absoluteUrl,{cache:"force-cache",credentials:"same-origin"});
         if(!response.ok) throw new Error(`PDF request failed: ${response.status}`);
         const buffer=await response.arrayBuffer();
-        pdf=await pdfjs.getDocument({data:buffer}).promise;
+        pdf=await pdfjs.getDocument({data:buffer,disableAutoFetch:false,disableStream:false}).promise;
       } catch(fetchError) {
-        // URL loading is retained as a second path for hosts that block ArrayBuffer fetches.
-        pdf=await pdfjs.getDocument({url:absoluteUrl,withCredentials:false}).promise;
+        pdf=await pdfjs.getDocument({url:absoluteUrl,withCredentials:false,disableAutoFetch:false,disableStream:false}).promise;
       }
+
       container.innerHTML="";
       container.classList.add("pdf-scroll","pdf-ready");
+
+      // Create every page shell first. This makes the custom scrollbar appear
+      // immediately for multi-page certificates, before all pages finish rendering.
+      const pages=[];
       for(let n=1;n<=pdf.numPages;n++){
         const page=await pdf.getPage(n);
-        const hostWidth=Math.max(container.clientWidth-20,320);
+        const hostWidth=Math.max(container.clientWidth-28,320);
         const base=page.getViewport({scale:1});
         const scale=Math.min(Math.max(hostWidth/base.width,.85),1.65);
         const viewport=page.getViewport({scale});
-        const wrap=document.createElement("div"); wrap.className="pdf-page"; wrap.dataset.page=String(n);
+        const wrap=document.createElement("div");
+        wrap.className="pdf-page";
+        wrap.dataset.page=String(n);
+        wrap.style.minHeight=`${Math.ceil(viewport.height)+20}px`;
         const canvas=document.createElement("canvas");
         canvas.setAttribute("aria-label", `PDF page ${n}`);
-        const ratio=Math.min(window.devicePixelRatio||1.5,2);
-        canvas.width=Math.floor(viewport.width*ratio); canvas.height=Math.floor(viewport.height*ratio);
-        canvas.style.width=`${viewport.width}px`; canvas.style.height=`${viewport.height}px`;
-        const ctx=canvas.getContext("2d",{alpha:false}); ctx.setTransform(ratio,0,0,ratio,0,0);
-        wrap.appendChild(canvas); container.appendChild(wrap);
-        await page.render({canvasContext:ctx,viewport}).promise;
+        canvas.style.width=`${viewport.width}px`;
+        canvas.style.height=`${viewport.height}px`;
+        canvas.className="pdf-page-canvas";
+        wrap.appendChild(canvas);
+        container.appendChild(wrap);
+        pages.push({page,viewport,canvas,wrap});
       }
+
+      const renderOne=async item=>{
+        if(item.wrap.dataset.rendered)return;
+        const ratio=Math.min(window.devicePixelRatio||1.5,2);
+        item.canvas.width=Math.floor(item.viewport.width*ratio);
+        item.canvas.height=Math.floor(item.viewport.height*ratio);
+        const ctx=item.canvas.getContext("2d",{alpha:false});
+        ctx.setTransform(ratio,0,0,ratio,0,0);
+        await item.page.render({canvasContext:ctx,viewport:item.viewport}).promise;
+        item.wrap.dataset.rendered="1";
+        item.wrap.style.minHeight="";
+      };
+
+      // Render the first page immediately so the certificate appears as soon as
+      // the PDF metadata is available. Remaining pages render in idle time.
+      await renderOne(pages[0]);
+      const renderRest=async()=>{
+        for(let i=1;i<pages.length;i++){
+          await renderOne(pages[i]);
+          await new Promise(r=>requestAnimationFrame(r));
+        }
+      };
+      if("requestIdleCallback" in window) requestIdleCallback(()=>renderRest(),{timeout:120});
+      else setTimeout(renderRest,0);
     }catch(err){
       console.warn("PDF preview failed:",err);
       container.classList.remove("pdf-scroll","pdf-ready");
