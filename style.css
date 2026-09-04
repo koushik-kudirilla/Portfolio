@@ -2242,3 +2242,89 @@ body.page-leaving #main-content { opacity: 0; transform: translateY(7px); }
 
 /* Supplied GitHub repository mark: solid Octocat silhouette, no enclosing circle. */
 .project-card .chip-link > svg { width:17px; height:17px; fill:currentColor; stroke:none; }
+
+/* ========================================================================
+   CERTIFICATION PDF PREVIEW — FINAL
+   Fixed reference-size preview, edge-to-edge page fit, visible custom rail,
+   and native wheel/touch scrolling that can chain back to the page.
+   ======================================================================== */
+.cert-preview {
+  position: relative !important;
+  aspect-ratio: 4 / 3 !important;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  flex: 0 0 auto !important;
+  overflow: hidden !important;
+  box-sizing: border-box;
+  background: #f4f4f4;
+}
+
+.cert-preview.pdf-scroll {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none;
+  overscroll-behavior: auto !important;
+  touch-action: pan-y !important;
+  -webkit-overflow-scrolling: touch;
+}
+.cert-preview.pdf-scroll::-webkit-scrollbar { display: none !important; width: 0 !important; }
+
+.cert-preview .pdf-page {
+  display: block !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-sizing: border-box !important;
+}
+.cert-preview .pdf-page canvas,
+.cert-preview .pdf-page-canvas {
+  display: block !important;
+  width: 100% !important;
+  max-width: none !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Always-visible UI scrollbar; it overlays the PDF so it never steals width
+   from the document and therefore never creates left/right white edges. */
+.pdf-custom-scrollbar {
+  position: absolute;
+  z-index: 20;
+  top: 8px;
+  right: 5px;
+  bottom: 8px;
+  width: 8px;
+  border-radius: 999px;
+  background: rgba(20, 28, 32, .24);
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity .16s ease;
+}
+.pdf-custom-scrollbar.is-hidden { opacity: 0; }
+.pdf-custom-scrollbar .pdf-scroll-thumb {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  min-height: 34px;
+  border-radius: 999px;
+  background: var(--accent-2);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 2px 8px rgba(0,0,0,.22);
+}
+
+/* No loading placeholder: the first rendered page is the only visual state. */
+.cert-preview .pdf-loading { display: none !important; }
+
+@media (max-width:760px) {
+  .cert-preview {
+    aspect-ratio: 4 / 3 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+  }
+}
