@@ -89,11 +89,25 @@
       // the fixed viewport so they remain vertically scrollable.
       container.style.setProperty("--pdf-page-ratio", String(pageRatio));
       if(pageRatio >= 1.15){
+        // Landscape certificates use the exact first-page aspect ratio.
+        // This keeps the preview at the Elite/Gold reference size without
+        // leaving a large artificial empty block underneath the page.
         container.classList.add("pdf-landscape-fit");
         container.classList.remove("pdf-portrait-scroll");
+        if(!container.classList.contains("resume-pdf-host")){
+          const fitHeight=Math.max(1,Math.round(hostWidth/pageRatio));
+          container.style.height=`${fitHeight}px`;
+          container.style.minHeight=`${fitHeight}px`;
+          container.style.maxHeight=`${fitHeight}px`;
+        }
       } else {
         container.classList.add("pdf-portrait-scroll");
         container.classList.remove("pdf-landscape-fit");
+        if(!container.classList.contains("resume-pdf-host")){
+          container.style.height="330px";
+          container.style.minHeight="330px";
+          container.style.maxHeight="330px";
+        }
       }
 
       const makePage=(page,n)=>{
