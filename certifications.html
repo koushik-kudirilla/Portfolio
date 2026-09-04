@@ -8,9 +8,375 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
+
+<style id="certification-preview-fix">
+/* Certification PDF previews: fixed preview geometry + independent custom scrollbars. */
+#cert-grid .cert-preview,
+#cert-grid .certificate-preview,
+#cert-grid .pdf-preview,
+#cert-grid .pdf-scroll,
+#cert-grid .cert-media {
+  box-sizing: border-box;
+}
+
+.cert-pdf-shell {
+  position: relative;
+  width: 100%;
+  height: 288px; /* image-1 / Elite preview height */
+  overflow: hidden;
+  background: #fff;
+  border-radius: inherit;
+  isolation: isolate;
+}
+
+.cert-pdf-shell.is-single-page {
+  height: 292px; /* tiny increase so Elite previews never need a scrollbar */
+  overflow: hidden;
+}
+
+.cert-pdf-viewport {
+  position: absolute;
+  inset: 0 10px 0 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  background: #fff;
+  z-index: 1;
+  cursor: default;
+}
+.cert-pdf-viewport::-webkit-scrollbar { width: 0; height: 0; }
+
+.cert-pdf-pages {
+  width: 100%;
+  min-height: 100%;
+  display: block;
+  background: #fff;
+}
+
+.cert-pdf-page {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  background: #fff;
+}
+
+.cert-pdf-scrollbar {
+  position: absolute;
+  top: 7px;
+  right: 3px;
+  bottom: 7px;
+  width: 7px;
+  border-radius: 999px;
+  background: rgba(15, 22, 25, .16);
+  z-index: 5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+.cert-pdf-shell.has-scroll .cert-pdf-scrollbar { opacity: 1; }
+
+.cert-pdf-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  min-height: 34px;
+  border-radius: 999px;
+  background: #61c9c3;
+  box-shadow: 0 0 0 1px rgba(97,201,195,.15);
+  transform: translateY(0);
+}
+
+.cert-pdf-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #fff;
+  color: #8c969e;
+  font: 500 13px/1.4 Inter, sans-serif;
+  z-index: 3;
+  transition: opacity .15s ease;
+}
+.cert-pdf-shell.ready .cert-pdf-status {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Keep the page itself scrollable while the cursor is over a certificate. */
+.cert-pdf-viewport[data-scroll-owner="true"] {
+  overscroll-behavior-y: contain;
+}
+
+/* The card preview must not create horizontal overflow. */
+.cert-pdf-page {
+  max-width: 100%;
+}
+
+/* On narrow screens keep the preview inside the card. */
+@media (max-width: 700px) {
+  .cert-pdf-shell,
+  .cert-pdf-shell.is-single-page { height: 292px; }
+}
+</style>
+
 </head><body data-theme="dark" data-page="certifications">
 <a class="skip-link" href="#main-content">Skip to content</a>
 <div id="site-nav"></div>
 <main id="main-content"><section class="page-hero"><div class="container"><div class="section-head"><span class="section-kicker" id="page-kicker">Certifications</span><h1 id="page-title"></h1><p id="page-description"></p></div></div></section><section class="page-content"><div class="container"><div class="cert-grid reveal" id="cert-grid"></div></div></section></main>
 <div id="site-footer"></div>
-<div class="modal" id="resume-modal" aria-hidden="true"><div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title"><div class="modal-head"><strong id="resume-modal-title">Resume Preview</strong><button class="modal-close" id="resume-close" type="button" aria-label="Close resume preview">×</button></div><div class="modal-viewer pdf-scroll" id="resume-viewer" aria-label="Resume document preview"></div><div class="modal-fallback">Prefer the original file? <a id="resume-open" href="assets/resume.pdf" target="_blank" rel="noopener noreferrer">Open resume</a> · <a href="assets/resume.pdf" download>Download</a></div></div></div><script src="data.js"></script><script src="page-templates.js"></script><script src="script.js"></script></body></html>
+<div class="modal" id="resume-modal" aria-hidden="true"><div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title"><div class="modal-head"><strong id="resume-modal-title">Resume Preview</strong><button class="modal-close" id="resume-close" type="button" aria-label="Close resume preview">×</button></div><div class="modal-viewer pdf-scroll" id="resume-viewer" aria-label="Resume document preview"></div><div class="modal-fallback">Prefer the original file? <a id="resume-open" href="assets/resume.pdf" target="_blank" rel="noopener noreferrer">Open resume</a> · <a href="assets/resume.pdf" download>Download</a></div></div></div>
+<script>
+(function () {
+  "use strict";
+
+  /*
+   * Certification preview fix:
+   * - Elite certificates are rendered as a single fitted page with no scrollbar.
+   * - Long certificates (currently Cambridge/B1) use a fixed outer viewport and
+   *   an independent custom scrollbar that never moves with the PDF content.
+   * - Wheel events over the PDF are handled without freezing the document page.
+   */
+
+  const PDFJS_SRC =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+  const PDFJS_WORKER =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+  const waitFor = (test, timeout) => new Promise((resolve) => {
+    const start = Date.now();
+    const tick = () => {
+      if (test()) return resolve(true);
+      if (Date.now() - start >= timeout) return resolve(false);
+      requestAnimationFrame(tick);
+    };
+    tick();
+  });
+
+  function loadPdfJs() {
+    if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+    return new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[data-cert-pdfjs]');
+      if (existing) {
+        existing.addEventListener("load", () => resolve(window.pdfjsLib), {once:true});
+        existing.addEventListener("error", reject, {once:true});
+        return;
+      }
+      const s = document.createElement("script");
+      s.src = PDFJS_SRC;
+      s.async = true;
+      s.dataset.certPdfjs = "true";
+      s.onload = () => {
+        if (!window.pdfjsLib) return reject(new Error("PDF.js unavailable"));
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+        resolve(window.pdfjsLib);
+      };
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+
+  function findPdfUrl(card) {
+    const media = card.querySelector(
+      'iframe[src*=".pdf"], embed[src*=".pdf"], object[data*=".pdf"], a[href*=".pdf"]'
+    );
+    if (!media) return null;
+    return media.getAttribute("src") || media.getAttribute("data") ||
+           media.getAttribute("href");
+  }
+
+  function findPreviewHost(card) {
+    const candidate = card.querySelector(
+      '.cert-preview, .certificate-preview, .pdf-preview, .cert-media, .pdf-scroll'
+    );
+    if (candidate) return candidate;
+
+    const frame = card.querySelector('iframe, embed, object');
+    if (!frame) return null;
+
+    let node = frame.parentElement;
+    for (let i = 0; node && node !== card; i++, node = node.parentElement) {
+      if (node.clientWidth >= card.clientWidth * .55) return node;
+    }
+    return frame.parentElement || frame;
+  }
+
+  function isLongCertificate(card, url) {
+    const text = (card.textContent || "").toLowerCase();
+    return /cambridge|b1 level|english certification/.test(text) ||
+           /cambridge/i.test(url || "");
+  }
+
+  function makeShell(host, longPdf) {
+    const shell = document.createElement("div");
+    shell.className = "cert-pdf-shell" + (longPdf ? " is-long" : " is-single-page");
+
+    const viewport = document.createElement("div");
+    viewport.className = "cert-pdf-viewport";
+    viewport.setAttribute("aria-label", "Certificate preview");
+
+    const pages = document.createElement("div");
+    pages.className = "cert-pdf-pages";
+
+    const status = document.createElement("div");
+    status.className = "cert-pdf-status";
+    status.textContent = "Preview";
+
+    viewport.appendChild(pages);
+    shell.appendChild(viewport);
+    shell.appendChild(status);
+
+    if (longPdf) {
+      const scrollbar = document.createElement("div");
+      scrollbar.className = "cert-pdf-scrollbar";
+      const thumb = document.createElement("div");
+      thumb.className = "cert-pdf-thumb";
+      scrollbar.appendChild(thumb);
+      shell.appendChild(scrollbar);
+
+      const syncScrollbar = () => {
+        const max = viewport.scrollHeight - viewport.clientHeight;
+        const track = scrollbar.clientHeight;
+        if (max <= 1 || track <= 1) {
+          shell.classList.remove("has-scroll");
+          return;
+        }
+        shell.classList.add("has-scroll");
+        const ratio = viewport.clientHeight / viewport.scrollHeight;
+        const thumbHeight = Math.max(34, track * ratio);
+        thumb.style.height = thumbHeight + "px";
+        const travel = Math.max(0, track - thumbHeight);
+        thumb.style.transform =
+          "translateY(" + (viewport.scrollTop / max) * travel + "px)";
+      };
+
+      viewport.addEventListener("scroll", syncScrollbar, {passive:true});
+      window.addEventListener("resize", syncScrollbar, {passive:true});
+
+      /*
+       * Do not let a PDF viewport trap the whole page. If the PDF can scroll,
+       * consume the wheel. At its top/bottom edge, let the document continue.
+       */
+      viewport.addEventListener("wheel", (event) => {
+        const max = viewport.scrollHeight - viewport.clientHeight;
+        if (max <= 1) return;
+
+        const delta = event.deltaY;
+        const atTop = viewport.scrollTop <= 0;
+        const atBottom = viewport.scrollTop >= max - 1;
+
+        if ((delta > 0 && !atBottom) || (delta < 0 && !atTop)) {
+          event.preventDefault();
+          viewport.scrollTop += delta;
+          viewport.dataset.scrollOwner = "true";
+        } else {
+          viewport.dataset.scrollOwner = "false";
+          /* intentionally do not preventDefault: the page can continue */
+        }
+      }, {passive:false});
+
+      shell._syncScrollbar = syncScrollbar;
+    }
+
+    return {shell, viewport, pages, status};
+  }
+
+  async function renderCertificate(card, pdfjs) {
+    const url = findPdfUrl(card);
+    if (!url) return;
+
+    const host = findPreviewHost(card);
+    if (!host || host.dataset.certPreviewFixed === "true") return;
+
+    const longPdf = isLongCertificate(card, url);
+    const {shell, viewport, pages} = makeShell(host, longPdf);
+
+    host.dataset.certPreviewFixed = "true";
+    host.innerHTML = "";
+    host.appendChild(shell);
+
+    try {
+      const pdf = await pdfjs.getDocument({url, disableAutoFetch: false}).promise;
+
+      const maxPages = longPdf ? pdf.numPages : 1;
+
+      for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
+        const page = await pdf.getPage(pageNo);
+        const unscaled = page.getViewport({scale: 1});
+        const width = Math.max(1, viewport.clientWidth);
+        const scale = width / unscaled.width;
+        const viewportPage = page.getViewport({scale});
+
+        const canvas = document.createElement("canvas");
+        canvas.className = "cert-pdf-page";
+        canvas.width = Math.ceil(viewportPage.width * devicePixelRatio);
+        canvas.height = Math.ceil(viewportPage.height * devicePixelRatio);
+        canvas.style.width = viewportPage.width + "px";
+        canvas.style.height = viewportPage.height + "px";
+
+        const ctx = canvas.getContext("2d", {alpha:false});
+        ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+        pages.appendChild(canvas);
+
+        await page.render({canvasContext: ctx, viewport: viewportPage}).promise;
+      }
+
+      shell.classList.add("ready");
+
+      if (!longPdf) {
+        viewport.scrollTop = 0;
+        viewport.style.overflowY = "hidden";
+      } else {
+        requestAnimationFrame(() => shell._syncScrollbar());
+      }
+    } catch (error) {
+      console.error("Certificate preview failed:", error);
+      /* Fall back to the browser's native PDF preview rather than a broken card. */
+      const fallback = document.createElement("iframe");
+      fallback.src = url + "#toolbar=0&navpanes=0&view=FitH";
+      fallback.title = "Certificate preview";
+      fallback.style.cssText =
+        "width:100%;height:100%;border:0;display:block;background:#fff;";
+      host.innerHTML = "";
+      host.appendChild(fallback);
+    }
+  }
+
+  async function initCertificatePreviews() {
+    const grid = document.getElementById("cert-grid");
+    if (!grid) return;
+
+    const ready = await waitFor(
+      () => grid.children.length > 0 &&
+            !!grid.querySelector('iframe,embed,object,a[href*=".pdf"]'),
+      8000
+    );
+    if (!ready) return;
+
+    try {
+      const pdfjs = await loadPdfJs();
+      const cards = Array.from(grid.children);
+      await Promise.all(cards.map(card => renderCertificate(card, pdfjs)));
+    } catch (error) {
+      console.warn("PDF.js could not be loaded; native previews remain available.", error);
+    }
+  }
+
+  /*
+   * Start as soon as the existing page renderer has produced the cards.
+   * No "loading document preview" message is shown.
+   */
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initCertificatePreviews, {once:true});
+  } else {
+    initCertificatePreviews();
+  }
+})();
+</script>
+
+<script src="data.js"></script><script src="page-templates.js"></script><script src="script.js"></script></body></html>
