@@ -3,6 +3,8 @@
   const body = document.body;
   const $ = (id) => document.getElementById(id);
   const PDFJS_SOURCES = [
+    // Prefer a bundled copy when the portfolio is deployed with its assets.
+    "assets/pdfjs/pdf.min.js",
     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js",
     "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js",
     "https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js"
@@ -67,6 +69,7 @@
         const viewport=page.getViewport({scale});
         const wrap=document.createElement("div"); wrap.className="pdf-page"; wrap.dataset.page=String(n);
         const canvas=document.createElement("canvas");
+        canvas.setAttribute("aria-label", `PDF page ${n}`);
         const ratio=Math.min(window.devicePixelRatio||1.5,2);
         canvas.width=Math.floor(viewport.width*ratio); canvas.height=Math.floor(viewport.height*ratio);
         canvas.style.width=`${viewport.width}px`; canvas.style.height=`${viewport.height}px`;
@@ -260,6 +263,23 @@
     window.addEventListener("popstate",()=>navigate(location.href,false,true));
   }
 
+  function setupPdfScrollChaining(){
+    if(document.body.dataset.pdfScrollBound)return;
+    document.body.dataset.pdfScrollBound="1";
+    document.addEventListener("wheel",(e)=>{
+      const scroller=e.target.closest?.(".pdf-scroll");
+      if(!scroller || scroller.scrollHeight<=scroller.clientHeight+1)return;
+      const atTop=scroller.scrollTop<=0;
+      const atBottom=scroller.scrollTop+scroller.clientHeight>=scroller.scrollHeight-1;
+      // Let the normal page receive the wheel event at the PDF boundaries.
+      // This prevents the whole page from becoming stuck while the pointer
+      // remains over a long certificate/resume preview.
+      if((e.deltaY<0 && atTop) || (e.deltaY>0 && atBottom))return;
+      e.preventDefault();
+      scroller.scrollTop += e.deltaY;
+    },{passive:false});
+  }
+
   function setupResumeModal(){
     const modal=$("resume-modal"), viewer=$("resume-viewer"), close=$("resume-close"), openLink=$("resume-open");
     if(!modal || modal.dataset.bound)return;
@@ -346,7 +366,7 @@
   document.addEventListener("DOMContentLoaded",async()=>{
     await loadSharedChrome();
     await loadHomeContent();
-    setupTheme();setupMobileNav();setupSpaNavigation();setupResumeModal();initPage();
+    setupTheme();setupMobileNav();setupSpaNavigation();setupPdfScrollChaining();setupResumeModal();initPage();
 
   });
 })();
