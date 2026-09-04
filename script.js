@@ -46,25 +46,16 @@
   // This removes the avoidable library-load delay from the first preview.
   if(body.dataset.page === "certifications") loadPdfJs().catch(()=>{});
 
-  async function renderPdf(container, url) {
-
-        if (!container || !url) return;
-
-        container.innerHTML = "";
-
-        container.classList.remove("pdf-ready", "pdf-failed");
-
-
-    // The outer preview is fixed/stable. Only this inner viewport scrolls.
-    // Keeping the custom rail outside the scrolling content prevents the rail
-    // from moving upward with the PDF pages.
-    const scroller=document.createElement("div");
-    scroller.className="pdf-scroll-viewport";
-    container.appendChild(scroller);
-
+  async function renderPdf(container,url){
+    if(!container||!url)return;
+    container.innerHTML="";
+    container.classList.remove("pdf-ready","pdf-failed");
     try{
       const pdfjs=await loadPdfJs();
       const absoluteUrl=new URL(url,location.href).href;
+
+      // Let PDF.js stream the document directly. This avoids waiting for the
+      // entire PDF to download before the first page can be painted.
       const pdf=await pdfjs.getDocument({
         url:absoluteUrl,
         withCredentials:false,
@@ -73,39 +64,40 @@
         rangeChunkSize:65536
       }).promise;
 
-      container.classList.add("pdf-ready");
-      scroller.classList.add("pdf-scroll");
+      container.innerHTML="";
+      container.classList.add("pdf-scroll","pdf-ready");
 
-      const firstPage=await pdf.getPage(1);
-      const hostWidth=Math.max(scroller.clientWidth,1);
-      const base=firstPage.getViewport({scale:1});
-      const pageRatio=base.width / base.height;
-      const scale=hostWidth/base.width;
       const pages=[];
+      const firstPage=await pdf.getPage(1);
+      const hostWidth=Math.max(container.clientWidth,1);
+      const base=firstPage.getViewport({scale:1});
+      const pdfRatio=base.width / base.height;
+      const naturalHeight=hostWidth / pdfRatio;
+      const isLongPdf = pdf.numPages > 1 || naturalHeight > 620;
 
-      // Match the preview box to the real first-page aspect ratio for
-      // landscape certificates. This removes the small white/empty strip
-      // caused by guessing a fixed ratio in CSS. Portrait/long pages keep
-      // the fixed viewport so they remain vertically scrollable.
-      container.style.setProperty("--pdf-page-ratio", String(pageRatio));
-      if(pageRatio >= 1.15){
-        container.classList.add("pdf-landscape-fit");
-        container.classList.remove("pdf-portrait-scroll");
-      } else {
-        container.classList.add("pdf-portrait-scroll");
-        container.classList.remove("pdf-landscape-fit");
-      }
+      // Derive the preview geometry from the PDF itself. There is deliberately
+      // no certificate-specific/fixed aspect ratio here. One-page certificates
+      // use their exact native page ratio; only unusually tall/long documents
+      // are constrained to a viewport so they can scroll internally.
+      container.style.aspectRatio = `${base.width} / ${base.height}`;
+      container.style.height = isLongPdf ? `${Math.min(naturalHeight, 620)}px` : `${naturalHeight}px`;
+      container.style.maxHeight = isLongPdf ? '620px' : 'none';
 
-      const makePage=(page,n)=>{
-        const viewport=page.getViewport({scale});
+      const scale=hostWidth/base.width;
+      const firstViewport=firstPage.getViewport({scale});
+
+      const makePage=(page,viewport,n)=>{
         const wrap=document.createElement("div");
         wrap.className="pdf-page";
         wrap.dataset.page=String(n);
+        wrap.style.minHeight=`${Math.ceil(viewport.height)}px`;
         const canvas=document.createElement("canvas");
         canvas.setAttribute("aria-label",`PDF page ${n}`);
         canvas.className="pdf-page-canvas";
+        canvas.style.width="100%";
+        canvas.style.height="auto";
         wrap.appendChild(canvas);
-        scroller.appendChild(wrap);
+        container.appendChild(wrap);
         return {page,viewport,canvas,wrap};
       };
 
@@ -118,14 +110,20 @@
         ctx.setTransform(ratio,0,0,ratio,0,0);
         await item.page.render({canvasContext:ctx,viewport:item.viewport}).promise;
         item.wrap.dataset.rendered="1";
+        item.wrap.style.minHeight="";
       };
 
-      pages.push(makePage(firstPage,1));
+      // Paint the first page before touching the rest of the document.
+      // This is what keeps the preview visually immediate.
+      pages.push(makePage(firstPage,firstViewport,1));
       await renderOne(pages[0]);
 
+      // Add remaining pages only after the first page is visible. Their shells
+      // establish the scroll range while their actual pixels render in idle time.
       for(let n=2;n<=pdf.numPages;n++){
         const page=await pdf.getPage(n);
-        pages.push(makePage(page,n));
+        const viewport=page.getViewport({scale});
+        pages.push(makePage(page,viewport,n));
       }
 
       const renderRest=async()=>{
@@ -133,118 +131,42 @@
           await renderOne(pages[i]);
           await new Promise(r=>requestAnimationFrame(r));
         }
-        updatePdfScrollbar(scroller,container);
       };
       if("requestIdleCallback" in window) requestIdleCallback(()=>renderRest(),{timeout:80});
       else setTimeout(renderRest,0);
 
-      setupPdfScrollbar(scroller,container);
-      setupPdfScrollChaining(scroller);
-      requestAnimationFrame(()=>updatePdfScrollbar(scroller,container));
+      setupPdfScrollbar(container);
     }catch(err){
       console.warn("PDF preview failed:",err);
-      container.classList.remove("pdf-ready");
+      container.classList.remove("pdf-scroll","pdf-ready");
       container.classList.add("pdf-failed");
       container.innerHTML=`<div class="pdf-error"><strong>Preview unavailable</strong><span>The PDF viewer could not load this file in the current browser context.</span></div>`;
     }
   }
 
-  function updatePdfScrollbar(scroller,host){
-    const rail=host?.querySelector(".pdf-custom-scrollbar");
-    const thumb=rail?.querySelector(".pdf-scroll-thumb");
-    if(!rail||!thumb||!scroller)return;
+  function setupPdfScrollbar(scroller){
+    if(!scroller || scroller.querySelector(".pdf-custom-scrollbar"))return;
+    const rail=document.createElement("div");
+    rail.className="pdf-custom-scrollbar";
+    rail.setAttribute("aria-hidden","true");
+    rail.innerHTML='<span class="pdf-scroll-thumb"></span>';
+    scroller.appendChild(rail);
+    const thumb=rail.firstElementChild;
 
-    const max=Math.max(0,scroller.scrollHeight-scroller.clientHeight);
-    const track=Math.max(0,rail.clientHeight);
-    if(max<=1||track<=1){
-      rail.classList.add("is-hidden");
-      return;
-    }
-
-    rail.classList.remove("is-hidden");
-    const h=Math.max(38,Math.min(track,Math.round(track*(scroller.clientHeight/scroller.scrollHeight))));
-    const y=Math.round((track-h)*(scroller.scrollTop/max));
-    thumb.style.height=`${h}px`;
-    thumb.style.transform=`translate3d(0,${y}px,0)`;
-    rail.setAttribute("aria-valuenow",String(Math.round((scroller.scrollTop/max)*100)));
-  }
-
-  function setupPdfScrollbar(scroller,host){
-    if(!scroller||!host)return;
-    let rail=host.querySelector(".pdf-custom-scrollbar");
-
-    if(!rail){
-      rail=document.createElement("div");
-      rail.className="pdf-custom-scrollbar";
-      rail.setAttribute("role","scrollbar");
-      rail.setAttribute("aria-label","PDF preview scroll");
-      rail.setAttribute("aria-valuemin","0");
-      rail.setAttribute("aria-valuemax","100");
-      rail.setAttribute("aria-valuenow","0");
-      rail.innerHTML='<span class="pdf-scroll-thumb"></span>';
-      host.appendChild(rail);
-
-      let dragging=false,startY=0,startScroll=0;
-      const thumb=rail.firstElementChild;
-
-      const move=e=>{
-        if(!dragging)return;
-        const track=Math.max(1,rail.clientHeight-thumb.offsetHeight);
-        const delta=e.clientY-startY;
-        scroller.scrollTop=startScroll+(delta/track)*(scroller.scrollHeight-scroller.clientHeight);
-        e.preventDefault();
-      };
-
-      const stop=()=>{
-        dragging=false;
-        document.removeEventListener("pointermove",move);
-        document.removeEventListener("pointerup",stop);
-      };
-
-      thumb.addEventListener("pointerdown",e=>{
-        dragging=true;
-        startY=e.clientY;
-        startScroll=scroller.scrollTop;
-        thumb.setPointerCapture?.(e.pointerId);
-        document.addEventListener("pointermove",move,{passive:false});
-        document.addEventListener("pointerup",stop,{once:true});
-        e.preventDefault();
-      });
-
-      rail.addEventListener("pointerdown",e=>{
-        if(e.target===thumb)return;
-        const rect=rail.getBoundingClientRect();
-        const ratio=Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height));
-        scroller.scrollTop=ratio*(scroller.scrollHeight-scroller.clientHeight);
-      });
-    }
-
-    const update=()=>updatePdfScrollbar(scroller,host);
+    const update=()=>{
+      const max=scroller.scrollHeight-scroller.clientHeight;
+      const track=rail.clientHeight;
+      if(max<=0){rail.classList.add("is-hidden");return;}
+      rail.classList.remove("is-hidden");
+      const ratio=scroller.clientHeight/scroller.scrollHeight;
+      const h=Math.max(34,Math.round(track*ratio));
+      const y=Math.round((track-h)*(scroller.scrollTop/max));
+      thumb.style.height=`${h}px`;
+      thumb.style.transform=`translateY(${y}px)`;
+    };
     scroller.addEventListener("scroll",update,{passive:true});
-
-    if(window.ResizeObserver){
-      const ro=new ResizeObserver(update);
-      ro.observe(scroller);
-      ro.observe(host);
-    }
+    new ResizeObserver(update).observe(scroller);
     requestAnimationFrame(update);
-  }
-
-  function setupPdfScrollChaining(scroller){
-    if(!scroller||scroller.dataset.chainBound)return;
-    scroller.dataset.chainBound="1";
-
-    scroller.addEventListener("wheel",e=>{
-      if(Math.abs(e.deltaY)<0.5)return;
-
-      const atTop=scroller.scrollTop<=0;
-      const atBottom=scroller.scrollTop+scroller.clientHeight>=scroller.scrollHeight-1;
-
-      if((atTop&&e.deltaY<0)||(atBottom&&e.deltaY>0)){
-        e.preventDefault();
-        window.scrollBy({top:e.deltaY,left:0,behavior:"auto"});
-      }
-    },{passive:false});
   }
 
   function setupTheme(){
