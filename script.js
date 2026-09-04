@@ -48,54 +48,52 @@
 
   async function renderPdf(container,url){
     if(!container||!url)return;
-    // Keep the preview visually empty while the PDF engine starts; never show a
-    // blocking "Loading document preview" message or freeze page scrolling.
     container.innerHTML="";
     container.classList.remove("pdf-ready","pdf-failed");
     try{
       const pdfjs=await loadPdfJs();
       const absoluteUrl=new URL(url,location.href).href;
-      let pdf;
-      try {
-        const response=await fetch(absoluteUrl,{cache:"force-cache",credentials:"same-origin"});
-        if(!response.ok) throw new Error(`PDF request failed: ${response.status}`);
-        const buffer=await response.arrayBuffer();
-        pdf=await pdfjs.getDocument({data:buffer,disableAutoFetch:false,disableStream:false}).promise;
-      } catch(fetchError) {
-        pdf=await pdfjs.getDocument({url:absoluteUrl,withCredentials:false,disableAutoFetch:false,disableStream:false}).promise;
-      }
+
+      // Let PDF.js stream the document directly. This avoids waiting for the
+      // entire PDF to download before the first page can be painted.
+      const pdf=await pdfjs.getDocument({
+        url:absoluteUrl,
+        withCredentials:false,
+        disableAutoFetch:false,
+        disableStream:false,
+        rangeChunkSize:65536
+      }).promise;
 
       container.innerHTML="";
       container.classList.add("pdf-scroll","pdf-ready");
 
-      // Create every page shell first. This makes the custom scrollbar appear
-      // immediately for multi-page certificates, before all pages finish rendering.
       const pages=[];
-      for(let n=1;n<=pdf.numPages;n++){
-        const page=await pdf.getPage(n);
-        const hostWidth=Math.max(container.clientWidth-28,320);
-        const base=page.getViewport({scale:1});
-        const scale=Math.min(Math.max(hostWidth/base.width,.85),1.65);
-        const viewport=page.getViewport({scale});
+      const firstPage=await pdf.getPage(1);
+      const hostWidth=Math.max(container.clientWidth,1);
+      const base=firstPage.getViewport({scale:1});
+      const scale=hostWidth/base.width;
+      const firstViewport=firstPage.getViewport({scale});
+
+      const makePage=(page,viewport,n)=>{
         const wrap=document.createElement("div");
         wrap.className="pdf-page";
         wrap.dataset.page=String(n);
-        wrap.style.minHeight=`${Math.ceil(viewport.height)+20}px`;
+        wrap.style.minHeight=`${Math.ceil(viewport.height)}px`;
         const canvas=document.createElement("canvas");
-        canvas.setAttribute("aria-label", `PDF page ${n}`);
-        canvas.style.width=`${viewport.width}px`;
-        canvas.style.height=`${viewport.height}px`;
+        canvas.setAttribute("aria-label",`PDF page ${n}`);
         canvas.className="pdf-page-canvas";
+        canvas.style.width="100%";
+        canvas.style.height="auto";
         wrap.appendChild(canvas);
         container.appendChild(wrap);
-        pages.push({page,viewport,canvas,wrap});
-      }
+        return {page,viewport,canvas,wrap};
+      };
 
       const renderOne=async item=>{
         if(item.wrap.dataset.rendered)return;
         const ratio=Math.min(window.devicePixelRatio||1.5,2);
-        item.canvas.width=Math.floor(item.viewport.width*ratio);
-        item.canvas.height=Math.floor(item.viewport.height*ratio);
+        item.canvas.width=Math.max(1,Math.floor(item.viewport.width*ratio));
+        item.canvas.height=Math.max(1,Math.floor(item.viewport.height*ratio));
         const ctx=item.canvas.getContext("2d",{alpha:false});
         ctx.setTransform(ratio,0,0,ratio,0,0);
         await item.page.render({canvasContext:ctx,viewport:item.viewport}).promise;
@@ -103,23 +101,60 @@
         item.wrap.style.minHeight="";
       };
 
-      // Render the first page immediately so the certificate appears as soon as
-      // the PDF metadata is available. Remaining pages render in idle time.
+      // Paint the first page before touching the rest of the document.
+      // This is what keeps the preview visually immediate.
+      pages.push(makePage(firstPage,firstViewport,1));
       await renderOne(pages[0]);
+
+      // Add remaining pages only after the first page is visible. Their shells
+      // establish the scroll range while their actual pixels render in idle time.
+      for(let n=2;n<=pdf.numPages;n++){
+        const page=await pdf.getPage(n);
+        const viewport=page.getViewport({scale});
+        pages.push(makePage(page,viewport,n));
+      }
+
       const renderRest=async()=>{
         for(let i=1;i<pages.length;i++){
           await renderOne(pages[i]);
           await new Promise(r=>requestAnimationFrame(r));
         }
       };
-      if("requestIdleCallback" in window) requestIdleCallback(()=>renderRest(),{timeout:120});
+      if("requestIdleCallback" in window) requestIdleCallback(()=>renderRest(),{timeout:80});
       else setTimeout(renderRest,0);
+
+      setupPdfScrollbar(container);
     }catch(err){
       console.warn("PDF preview failed:",err);
       container.classList.remove("pdf-scroll","pdf-ready");
       container.classList.add("pdf-failed");
       container.innerHTML=`<div class="pdf-error"><strong>Preview unavailable</strong><span>The PDF viewer could not load this file in the current browser context.</span></div>`;
     }
+  }
+
+  function setupPdfScrollbar(scroller){
+    if(!scroller || scroller.querySelector(".pdf-custom-scrollbar"))return;
+    const rail=document.createElement("div");
+    rail.className="pdf-custom-scrollbar";
+    rail.setAttribute("aria-hidden","true");
+    rail.innerHTML='<span class="pdf-scroll-thumb"></span>';
+    scroller.appendChild(rail);
+    const thumb=rail.firstElementChild;
+
+    const update=()=>{
+      const max=scroller.scrollHeight-scroller.clientHeight;
+      const track=rail.clientHeight;
+      if(max<=0){rail.classList.add("is-hidden");return;}
+      rail.classList.remove("is-hidden");
+      const ratio=scroller.clientHeight/scroller.scrollHeight;
+      const h=Math.max(34,Math.round(track*ratio));
+      const y=Math.round((track-h)*(scroller.scrollTop/max));
+      thumb.style.height=`${h}px`;
+      thumb.style.transform=`translateY(${y}px)`;
+    };
+    scroller.addEventListener("scroll",update,{passive:true});
+    new ResizeObserver(update).observe(scroller);
+    requestAnimationFrame(update);
   }
 
   function setupTheme(){
@@ -301,20 +336,9 @@
   }
 
   function setupPdfScrollChaining(){
-    if(document.body.dataset.pdfScrollBound)return;
-    document.body.dataset.pdfScrollBound="1";
-    document.addEventListener("wheel",(e)=>{
-      const scroller=e.target.closest?.(".pdf-scroll");
-      if(!scroller || scroller.scrollHeight<=scroller.clientHeight+1)return;
-      const atTop=scroller.scrollTop<=0;
-      const atBottom=scroller.scrollTop+scroller.clientHeight>=scroller.scrollHeight-1;
-      // Let the normal page receive the wheel event at the PDF boundaries.
-      // This prevents the whole page from becoming stuck while the pointer
-      // remains over a long certificate/resume preview.
-      if((e.deltaY<0 && atTop) || (e.deltaY>0 && atBottom))return;
-      e.preventDefault();
-      scroller.scrollTop += e.deltaY;
-    },{passive:false});
+    // Native nested scrolling is intentionally used here. Preventing wheel
+    // events on the PDF causes the document behind it to freeze at the pointer.
+    // CSS overscroll-behavior:auto lets the page take over at the PDF edges.
   }
 
   function setupResumeModal(){
@@ -374,7 +398,7 @@
       const grid=$("achievements-grid");grid.innerHTML="";d.achievements.forEach((a,i)=>{const card=document.createElement("article");card.className="achievement-card";card.innerHTML=`<div class="achievement-card-top"><span class="achievement-index">${String(i+1).padStart(2,"0")}</span><span class="achievement-title">${esc(a.title)}</span></div><p class="achievement-context">${esc(a.context)}</p><p class="achievement-detail">${esc(a.detail)}</p><p class="achievement-date">${esc(a.date)}</p>`;grid.appendChild(card);});
     }
     if(page==="certifications"){
-      const grid=$("cert-grid");grid.innerHTML="";d.certifications.forEach(c=>{const card=document.createElement("article");card.className="cert-card";card.innerHTML=`<div class="cert-preview pdf-scroll" data-pdf="${attr(c.proofUrl||"")}"><div class="pdf-loading">Loading document preview…</div></div><div class="cert-body"><div class="cert-heading"><span class="cert-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="9" r="5.5" stroke="currentColor" stroke-width="1.6"/><path d="m9.5 13.5-1 6 3.5-2 3.5 2-1-6M9.7 9l1.5 1.5L14.8 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><h3>${esc(c.name)}</h3></div>${c.course?`<p class="cert-course">${esc(c.course)}</p>`:""}<div class="cert-meta"><span class="cert-org">${esc(c.organization)}</span><span>${esc(c.date)}</span></div>${c.score?`<div class="cert-meta"><span>Score</span><span class="cert-score">${esc(c.score)}</span></div>`:""}<div class="cert-proof-row">${c.proofUrl?docLink(c.proofUrl,"Open Certificate"):""}</div></div>`;grid.appendChild(card);});
+      const grid=$("cert-grid");grid.innerHTML="";d.certifications.forEach(c=>{const card=document.createElement("article");card.className="cert-card";card.innerHTML=`<div class="cert-preview pdf-scroll" data-pdf="${attr(c.proofUrl||"")}"></div><div class="cert-body"><div class="cert-heading"><span class="cert-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="9" r="5.5" stroke="currentColor" stroke-width="1.6"/><path d="m9.5 13.5-1 6 3.5-2 3.5 2-1-6M9.7 9l1.5 1.5L14.8 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><h3>${esc(c.name)}</h3></div>${c.course?`<p class="cert-course">${esc(c.course)}</p>`:""}<div class="cert-meta"><span class="cert-org">${esc(c.organization)}</span><span>${esc(c.date)}</span></div>${c.score?`<div class="cert-meta"><span>Score</span><span class="cert-score">${esc(c.score)}</span></div>`:""}<div class="cert-proof-row">${c.proofUrl?docLink(c.proofUrl,"Open Certificate"):""}</div></div>`;grid.appendChild(card);});
       grid.querySelectorAll("[data-pdf]").forEach(v=>{if(v.dataset.pdf)renderPdf(v,v.dataset.pdf);});
     }
     if(page==="research") $("research-callout").innerHTML=`<div class="callout-kicker">Publication</div><h3>${esc(d.research.title)}</h3><p>${esc(d.research.type)}</p><p class="meta">Paper ID · ${esc(d.research.paperId)}</p>`;
