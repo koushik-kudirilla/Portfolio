@@ -53,9 +53,6 @@
     try{
       const pdfjs=await loadPdfJs();
       const absoluteUrl=new URL(url,location.href).href;
-
-      // Let PDF.js stream the document directly. This avoids waiting for the
-      // entire PDF to download before the first page can be painted.
       const pdf=await pdfjs.getDocument({
         url:absoluteUrl,
         withCredentials:false,
@@ -67,23 +64,20 @@
       container.innerHTML="";
       container.classList.add("pdf-scroll","pdf-ready");
 
-      const pages=[];
       const firstPage=await pdf.getPage(1);
       const hostWidth=Math.max(container.clientWidth,1);
       const base=firstPage.getViewport({scale:1});
       const scale=hostWidth/base.width;
-      const firstViewport=firstPage.getViewport({scale});
+      const pages=[];
 
-      const makePage=(page,viewport,n)=>{
+      const makePage=(page,n)=>{
+        const viewport=page.getViewport({scale});
         const wrap=document.createElement("div");
         wrap.className="pdf-page";
         wrap.dataset.page=String(n);
-        wrap.style.minHeight=`${Math.ceil(viewport.height)}px`;
         const canvas=document.createElement("canvas");
         canvas.setAttribute("aria-label",`PDF page ${n}`);
         canvas.className="pdf-page-canvas";
-        canvas.style.width="100%";
-        canvas.style.height="auto";
         wrap.appendChild(canvas);
         container.appendChild(wrap);
         return {page,viewport,canvas,wrap};
@@ -98,20 +92,14 @@
         ctx.setTransform(ratio,0,0,ratio,0,0);
         await item.page.render({canvasContext:ctx,viewport:item.viewport}).promise;
         item.wrap.dataset.rendered="1";
-        item.wrap.style.minHeight="";
       };
 
-      // Paint the first page before touching the rest of the document.
-      // This is what keeps the preview visually immediate.
-      pages.push(makePage(firstPage,firstViewport,1));
+      pages.push(makePage(firstPage,1));
       await renderOne(pages[0]);
 
-      // Add remaining pages only after the first page is visible. Their shells
-      // establish the scroll range while their actual pixels render in idle time.
       for(let n=2;n<=pdf.numPages;n++){
         const page=await pdf.getPage(n);
-        const viewport=page.getViewport({scale});
-        pages.push(makePage(page,viewport,n));
+        pages.push(makePage(page,n));
       }
 
       const renderRest=async()=>{
@@ -119,11 +107,13 @@
           await renderOne(pages[i]);
           await new Promise(r=>requestAnimationFrame(r));
         }
+        updatePdfScrollbar(container);
       };
       if("requestIdleCallback" in window) requestIdleCallback(()=>renderRest(),{timeout:80});
       else setTimeout(renderRest,0);
 
       setupPdfScrollbar(container);
+      setupPdfScrollChaining(container);
     }catch(err){
       console.warn("PDF preview failed:",err);
       container.classList.remove("pdf-scroll","pdf-ready");
@@ -132,29 +122,75 @@
     }
   }
 
-  function setupPdfScrollbar(scroller){
-    if(!scroller || scroller.querySelector(".pdf-custom-scrollbar"))return;
-    const rail=document.createElement("div");
-    rail.className="pdf-custom-scrollbar";
-    rail.setAttribute("aria-hidden","true");
-    rail.innerHTML='<span class="pdf-scroll-thumb"></span>';
-    scroller.appendChild(rail);
-    const thumb=rail.firstElementChild;
+  function updatePdfScrollbar(scroller){
+    const rail=scroller?.querySelector(".pdf-custom-scrollbar");
+    const thumb=rail?.querySelector(".pdf-scroll-thumb");
+    if(!rail||!thumb)return;
+    const max=Math.max(0,scroller.scrollHeight-scroller.clientHeight);
+    const track=Math.max(0,rail.clientHeight);
+    if(max<=1||track<=1){rail.classList.add("is-hidden");return;}
+    rail.classList.remove("is-hidden");
+    const h=Math.max(34,Math.min(track,Math.round(track*(scroller.clientHeight/scroller.scrollHeight))));
+    const y=Math.round((track-h)*(scroller.scrollTop/max));
+    thumb.style.height=`${h}px`;
+    thumb.style.transform=`translateY(${y}px)`;
+  }
 
-    const update=()=>{
-      const max=scroller.scrollHeight-scroller.clientHeight;
-      const track=rail.clientHeight;
-      if(max<=0){rail.classList.add("is-hidden");return;}
-      rail.classList.remove("is-hidden");
-      const ratio=scroller.clientHeight/scroller.scrollHeight;
-      const h=Math.max(34,Math.round(track*ratio));
-      const y=Math.round((track-h)*(scroller.scrollTop/max));
-      thumb.style.height=`${h}px`;
-      thumb.style.transform=`translateY(${y}px)`;
-    };
+  function setupPdfScrollbar(scroller){
+    if(!scroller)return;
+    let rail=scroller.querySelector(".pdf-custom-scrollbar");
+    if(!rail){
+      rail=document.createElement("div");
+      rail.className="pdf-custom-scrollbar";
+      rail.setAttribute("role","scrollbar");
+      rail.setAttribute("aria-label","PDF preview scroll");
+      rail.setAttribute("aria-valuemin","0");
+      rail.setAttribute("aria-valuemax","100");
+      rail.innerHTML='<span class="pdf-scroll-thumb"></span>';
+      scroller.appendChild(rail);
+
+      let dragging=false,startY=0,startScroll=0;
+      const thumb=rail.firstElementChild;
+      const move=e=>{
+        if(!dragging)return;
+        const track=Math.max(1,rail.clientHeight-thumb.offsetHeight);
+        const delta=e.clientY-startY;
+        scroller.scrollTop=startScroll+(delta/track)*(scroller.scrollHeight-scroller.clientHeight);
+        e.preventDefault();
+      };
+      const stop=()=>{dragging=false;document.removeEventListener("pointermove",move);document.removeEventListener("pointerup",stop);};
+      thumb.addEventListener("pointerdown",e=>{
+        dragging=true;startY=e.clientY;startScroll=scroller.scrollTop;
+        thumb.setPointerCapture?.(e.pointerId);
+        document.addEventListener("pointermove",move,{passive:false});
+        document.addEventListener("pointerup",stop,{once:true});
+        e.preventDefault();
+      });
+      rail.addEventListener("pointerdown",e=>{
+        if(e.target===thumb)return;
+        const rect=rail.getBoundingClientRect();
+        const ratio=Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height));
+        scroller.scrollTop=ratio*(scroller.scrollHeight-scroller.clientHeight);
+      });
+    }
+    const update=()=>updatePdfScrollbar(scroller);
     scroller.addEventListener("scroll",update,{passive:true});
-    new ResizeObserver(update).observe(scroller);
+    if(window.ResizeObserver)new ResizeObserver(update).observe(scroller);
     requestAnimationFrame(update);
+  }
+
+  function setupPdfScrollChaining(scroller){
+    if(!scroller||scroller.dataset.chainBound)return;
+    scroller.dataset.chainBound="1";
+    scroller.addEventListener("wheel",e=>{
+      if(Math.abs(e.deltaY)<0.5)return;
+      const atTop=scroller.scrollTop<=0;
+      const atBottom=scroller.scrollTop+scroller.clientHeight>=scroller.scrollHeight-1;
+      if((atTop&&e.deltaY<0)||(atBottom&&e.deltaY>0)){
+        e.preventDefault();
+        window.scrollBy({top:e.deltaY,left:0,behavior:"auto"});
+      }
+    },{passive:false});
   }
 
   function setupTheme(){
